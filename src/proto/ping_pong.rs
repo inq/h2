@@ -211,18 +211,19 @@ impl ReceivedPing {
 
 impl UserPings {
     pub(crate) fn send_ping(&self) -> Result<(), Option<proto::Error>> {
-        let prev = self.0.state.compare_and_swap(
+        let res = self.0.state.compare_exchange(
             USER_STATE_EMPTY,        // current
             USER_STATE_PENDING_PING, // new
             Ordering::AcqRel,
+            Ordering::AcqRel,
         );
 
-        match prev {
-            USER_STATE_EMPTY => {
+        match res {
+            Ok(USER_STATE_EMPTY) => {
                 self.0.ping_task.wake();
                 Ok(())
             }
-            USER_STATE_CLOSED => Err(Some(broken_pipe().into())),
+            Err(USER_STATE_CLOSED) => Err(Some(broken_pipe().into())),
             _ => {
                 // Was already pending, user error!
                 Err(None)
@@ -234,15 +235,16 @@ impl UserPings {
         // Must register before checking state, in case state were to change
         // before we could register, and then the ping would just be lost.
         self.0.pong_task.register(cx.waker());
-        let prev = self.0.state.compare_and_swap(
+        let res = self.0.state.compare_exchange(
             USER_STATE_RECEIVED_PONG, // current
             USER_STATE_EMPTY,         // new
             Ordering::AcqRel,
+            Ordering::AcqRel,
         );
 
-        match prev {
-            USER_STATE_RECEIVED_PONG => Poll::Ready(Ok(())),
-            USER_STATE_CLOSED => Poll::Ready(Err(broken_pipe().into())),
+        match res {
+            Ok(USER_STATE_RECEIVED_PONG) => Poll::Ready(Ok(())),
+            Err(USER_STATE_CLOSED) => Poll::Ready(Err(broken_pipe().into())),
             _ => Poll::Pending,
         }
     }
@@ -252,13 +254,14 @@ impl UserPings {
 
 impl UserPingsRx {
     fn receive_pong(&self) -> bool {
-        let prev = self.0.state.compare_and_swap(
+        let res = self.0.state.compare_exchange(
             USER_STATE_PENDING_PONG,  // current
             USER_STATE_RECEIVED_PONG, // new
             Ordering::AcqRel,
+            Ordering::AcqRel,
         );
 
-        if prev == USER_STATE_PENDING_PONG {
+        if res == Ok(USER_STATE_PENDING_PONG) {
             self.0.pong_task.wake();
             true
         } else {
